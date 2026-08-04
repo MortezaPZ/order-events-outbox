@@ -1,0 +1,31 @@
+[project]
+name = "orderflow"
+version = "1.0.0"
+description = "Event-driven order service using the transactional outbox pattern."
+requires-python = ">=3.11"
+
+[tool.ruff]
+target-version = "py311"
+line-length = 90
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM", "RUF"]
+ignore = [
+    # Single-quote style is used throughout; the formatter is not run in CI.
+    "Q000",
+    # `Depends(...)` in a parameter default is FastAPI's documented dependency
+    # injection syntax, not the mutable-default bug B008 exists to catch.
+    "B008",
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests reach into private handler registries and unpack fixtures they only
+# partly use; neither is worth contorting the tests to avoid.
+"tests/*" = ["SLF001", "RUF059", "B017"]
+
+[tool.ruff.format]
+quote-style = "single"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"

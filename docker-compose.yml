@@ -1,0 +1,33 @@
+services:
+  api:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      # Swap to redis to run the API and worker as separate processes sharing
+      # a real queue; memory keeps everything in one container.
+      BROKER: ${BROKER:-memory}
+      REDIS_URL: redis://redis:6379/0
+      DB_PATH: /data/orderflow.db
+    volumes:
+      - order-data:/data
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+
+volumes:
+  order-data:
+  redis-data:
