@@ -1,49 +1,51 @@
-# Order Events
+# Order Events — سرویس سفارش رویدادمحور
 
-An event-driven order service built around the three failure modes that break
-naive message-based systems:
+*An event-driven order service that solves the three failure modes that break naive message-based systems: lost events, duplicate processing, and blocked queues — via the transactional outbox pattern, idempotent consumers, and bounded retry + dead-letter. See below for the Persian write-up.*
 
-| Failure | Answer here |
+یک سرویس سفارش رویدادمحور که حول سه حالت خرابی ساخته شده که سیستم‌های
+پیام‌محور ساده‌لوح را از کار می‌اندازد:
+
+| خرابی | پاسخ این پروژه |
 |---|---|
-| DB commit succeeds, publish fails → event lost | **Transactional outbox** |
-| Message delivered twice → side effect runs twice | **Idempotent consumers** |
-| Message always fails → queue blocked forever | **Bounded retry + dead-letter** |
+| commit دیتابیس موفق می‌شود ولی publish شکست می‌خورد → رویداد گم می‌شود | **الگوی Transactional Outbox** |
+| پیام دوبار تحویل داده می‌شود → اثر جانبی دوبار اجرا می‌شود | **مصرف‌کننده‌های ایدمپوتنت** |
+| پیام همیشه شکست می‌خورد → صف برای همیشه مسدود می‌شود | **تلاش مجدد محدود + dead-letter** |
 
-**FastAPI · SQLite · pluggable broker · Docker · GitHub Actions.** Runs with no
-infrastructure: `python demo.py` and it works.
+**FastAPI · SQLite · بروکر قابل‌تعویض · Docker · GitHub Actions.** بدون
+هیچ زیرساختی اجرا می‌شود: `python demo.py` و کار می‌کند.
 
 ---
 
-## How it flows
+## جریان کار
 
 ```
 POST /orders ──┬──▶ orders table     ┐
-               └──▶ outbox table     ┘  ONE transaction
+               └──▶ outbox table     ┘  یک تراکنش واحد
                         │
-                  relay (poller)  ──── broker down? row stays pending
+                  relay (poller)  ──── بروکر خاموش؟ سطر در حالت pending می‌ماند
                         │
                         ▼
                   broker (memory | redis)
                         │
                   worker — claim(event_id)
                    │            │
-              first time     duplicate → skip
+              بار اول       تکراری → رد شود
                    │
-              handler runs
+              اجرای handler
                    │
             ┌──────┴──────┐
-          success        raises
+          موفق          خطا
                            │
-                  attempt < max? ──yes──▶ requeue with backoff
+                  attempt < max؟ ──بله──▶ صف مجدد با backoff
                            │
-                          no ──▶ dead_letters (replayable)
+                          خیر ──▶ dead_letters (قابل بازپخش)
 ```
 
 ---
 
-## The five guarantees, demonstrated
+## پنج تضمین، به‌صورت عملی
 
-`python demo.py` runs each one and prints what happened:
+`python demo.py` هرکدام را اجرا می‌کند و نتیجه را چاپ می‌کند:
 
 ```
 1. Normal flow
@@ -77,43 +79,43 @@ POST /orders ──┬──▶ orders table     ┐
   dead letters:   0
 ```
 
-Scenario 2 is the one worth reading twice: the broker was down for two passes
-and the event was still delivered, because it was never only in the queue.
+سناریوی ۲ آن یکی است که ارزش دوبار خواندن دارد: بروکر برای دو دور خاموش
+بود و رویداد بازهم تحویل داده شد، چون هیچ‌وقت فقط در صف نبود.
 
 ---
 
-## Quick start
+## شروع سریع
 
 ```bash
 python -m venv .venv
-.venv/Scripts/activate            # source .venv/bin/activate on Linux/macOS
+.venv/Scripts/activate            # source .venv/bin/activate در Linux/macOS
 pip install -r requirements.txt
 
-python demo.py                              # the five scenarios above
-pytest tests -q                             # 53 tests
-uvicorn orderflow.api:app --reload          # API on http://localhost:8000
+python demo.py                              # پنج سناریوی بالا
+pytest tests -q                             # ۵۳ آزمون
+uvicorn orderflow.api:app --reload          # API روی http://localhost:8000
 ```
 
-With Docker:
+با Docker:
 
 ```bash
 docker compose up --build           # API + Redis
-BROKER=redis docker compose up      # use the real queue
+BROKER=redis docker compose up      # استفاده از صف واقعی
 ```
 
 ---
 
 ## API
 
-| Method | Endpoint | Purpose |
+| متد | مسیر | هدف |
 |---|---|---|
-| `GET` | `/health` | Orders, outbox depth, queue depth, dead letters |
-| `POST` | `/orders` | Place an order — writes order + event atomically |
-| `GET` | `/orders` · `/orders/{id}` | Read orders |
-| `POST` | `/orders/{id}/pay` | Emit `order.paid` |
-| `POST` | `/orders/{id}/cancel` | Emit `order.cancelled` |
-| `GET` | `/dead-letters` | Inspect what failed and why |
-| `POST` | `/dead-letters/{id}/replay` | Requeue after fixing the cause |
+| `GET` | `/health` | تعداد سفارش‌ها، عمق outbox، عمق صف، dead letterها |
+| `POST` | `/orders` | ثبت سفارش — سفارش و رویداد را اتمیک می‌نویسد |
+| `GET` | `/orders` · `/orders/{id}` | خواندن سفارش‌ها |
+| `POST` | `/orders/{id}/pay` | صدور رویداد `order.paid` |
+| `POST` | `/orders/{id}/cancel` | صدور رویداد `order.cancelled` |
+| `GET` | `/dead-letters` | بررسی این‌که چه چیزی و چرا شکست خورده |
+| `POST` | `/dead-letters/{id}/replay` | صف مجدد بعد از رفع علت |
 
 ```bash
 curl -X POST http://localhost:8000/orders \
@@ -123,85 +125,87 @@ curl -X POST http://localhost:8000/orders \
 curl http://localhost:8000/health
 ```
 
-`/health` exposes `outbox_pending` and `queue_depth` on purpose: a growing
-outbox means the relay is stuck, a growing queue means workers are behind, and
-those are different incidents.
+`/health` عمداً `outbox_pending` و `queue_depth` را جدا نشان می‌دهد: رشد
+outbox یعنی relay گیر کرده، رشد صف یعنی workerها عقب افتاده‌اند — و این‌ها
+دو حادثه‌ی متفاوت‌اند.
 
 ---
 
-## Design decisions worth explaining
+## تصمیم‌های طراحی که ارزش توضیح دارند
 
-**Why an outbox instead of publishing inside the request?** Because "write to
-the DB, then publish" has a window: if the process dies between the two, the
-order exists and nobody hears about it. Writing both in one transaction removes
-that window. The cost is at-least-once delivery instead of exactly-once — which
-is why consumers are idempotent.
+**چرا outbox به‌جای publish داخل خود درخواست؟** چون «بنویس در دیتابیس، بعد
+publish کن» یک پنجره‌ی خطر دارد: اگر پردازش بین این دو مرحله بمیرد، سفارش
+وجود دارد ولی هیچ‌کس از آن باخبر نمی‌شود. نوشتن هر دو در یک تراکنش این
+پنجره را می‌بندد. هزینه‌اش تحویل at-least-once به‌جای exactly-once است —
+برای همین مصرف‌کننده‌ها ایدمپوتنت‌اند.
 
-**The claim is one atomic statement.** `INSERT INTO processed_events` either
-succeeds or hits the primary key. A check-then-act (`SELECT` then `INSERT`)
-would let two workers both pass the check on a redelivery. A test races eight
-threads at the same event id and asserts exactly one wins.
+**claim یک عبارت اتمیک است.** `INSERT INTO processed_events` یا موفق
+می‌شود یا به کلید اصلی برخورد می‌کند. یک check-then-act (`SELECT` بعد
+`INSERT`) اجازه می‌داد دو worker هر دو در یک تحویل مجدد از چک عبور کنند.
+یک آزمون هشت thread را روی یک event id مسابقه می‌دهد و تضمین می‌کند دقیقاً
+یکی برنده می‌شود.
 
-**A failed handler releases its claim.** This is the subtle one: if the claim
-leaked, the retry would be dismissed as a duplicate and the event would vanish
-silently — worse than the original failure. There is a test for exactly that.
+**یک handler ناموفق claim خودش را آزاد می‌کند.** این نکته‌ی ظریف است: اگر
+claim نشتی می‌کرد، تلاش مجدد به‌عنوان تکراری رد می‌شد و رویداد بی‌سروصدا
+ناپدید می‌شد — بدتر از خطای اصلی. یک آزمون دقیقاً همین را چک می‌کند.
 
-**The relay stops at the first publish failure.** It does not skip ahead to the
-next event, because that would deliver events out of order. Everything behind
-the failure stays pending and is retried on the next pass.
+**relay در اولین شکست publish متوقف می‌شود.** به رویداد بعدی نمی‌پرد، چون
+این باعث تحویل خارج از ترتیب می‌شد. هر چیزی پشت آن شکست، در حالت pending
+می‌ماند و در دور بعد دوباره تلاش می‌شود.
 
-**Permanent vs transient failures are different.** A handler raises
-`PermanentError` for a payload that will never succeed (a missing field), and it
-dead-letters immediately instead of burning three attempts on it.
+**خطاهای دائمی و موقت متفاوت‌اند.** یک handler برای payload‌ای که هرگز
+موفق نمی‌شود (فیلد گم‌شده) `PermanentError` می‌دهد و بلافاصله به
+dead-letter می‌رود، به‌جای سوزاندن سه تلاش رویش.
 
-**Unknown event types are acknowledged, not requeued.** In a real fleet another
-service may be the intended consumer. Requeuing would spin forever.
+**نوع رویداد ناشناخته تأیید می‌شود، نه صف‌مجدد.** در یک ناوگان واقعی ممکن
+است سرویس دیگری مصرف‌کننده‌ی مورد نظر باشد. صف‌مجدد برای همیشه چرخ می‌زد.
 
-**Events carry a schema version.** A consumer that receives a payload newer than
-it understands refuses it rather than misreading it — which matters during a
-rolling deploy where old and new consumers run side by side.
+**رویدادها نسخه‌ی schema حمل می‌کنند.** مصرف‌کننده‌ای که payload جدیدتر از
+درک خودش می‌گیرد، به‌جای بدخوانی آن را رد می‌کند — این در یک rolling deploy
+که مصرف‌کننده‌های قدیم و جدید کنار هم اجرا می‌شوند، اهمیت دارد.
 
-**Dead letters are replayable.** Losing a message to a bug you have since fixed
-is not acceptable; `POST /dead-letters/{id}/replay` puts it back with a reset
-attempt counter.
+**dead letterها قابل بازپخش‌اند.** ازدست‌دادن یک پیام به‌خاطر باگی که از
+قبل رفعش کرده‌ای قابل‌قبول نیست؛ `POST /dead-letters/{id}/replay` آن را با
+شمارنده‌ی تلاش صفرشده برمی‌گرداند.
 
 ---
 
-## Tests — 53
+## آزمون‌ها — ۵۳ مورد
 
-| Area | Covers |
+| بخش | پوشش می‌دهد |
 |---|---|
-| Event envelope | round-trip, validation, malformed JSON, future schema |
-| Outbox atomicity | order+event together, no orphan on rejection, ordering |
-| Relay | delivery, broker outage, order preservation on failure |
-| Idempotency | claim once, 8-thread race, release/retake, redelivery |
-| Retry & DLQ | backoff maths, requeue with attempt, dead-letter, replay |
-| Claim release | a failed handler must not block its own retry |
-| End-to-end | full lifecycle, 40 orders with no loss, poison handling |
-| API | placement, transitions, validation, dead-letter operations |
+| پاکت رویداد | رفت‌وبرگشت، اعتبارسنجی، JSON خراب، schema آینده |
+| اتمیک‌بودن outbox | سفارش+رویداد باهم، بدون یتیم‌ماندن هنگام رد، ترتیب |
+| Relay | تحویل، قطعی بروکر، حفظ ترتیب سفارش‌ها هنگام خطا |
+| ایدمپوتنسی | claim یک‌باره، مسابقه‌ی ۸ thread، آزادسازی/بازگیری، تحویل مجدد |
+| تلاش مجدد و DLQ | ریاضیات backoff، صف‌مجدد با شماره‌ی تلاش، dead-letter، بازپخش |
+| آزادسازی claim | یک handler ناموفق نباید مانع تلاش مجدد خودش شود |
+| سرتاسری | چرخه‌ی کامل، ۴۰ سفارش بدون هیچ گمشدگی، مدیریت پیام مسموم |
+| API | ثبت، انتقال وضعیت، اعتبارسنجی، عملیات dead-letter |
 
 ---
 
 ## CI
 
-`.github/workflows/ci.yml` runs lint and tests on Python 3.11/3.12/3.13, then
-builds the Docker image and **smoke-tests the running container** — waits for
-`/health`, places a real order, and asserts it reaches `reserved`. An image that
-builds but does not serve is not a passing build.
+`.github/workflows/ci.yml` روی Python 3.11/3.12/3.13 لینت و آزمون اجرا
+می‌کند، بعد ایمیج Docker را می‌سازد و **کانتینر در حال اجرا را smoke-test
+می‌کند** — منتظر `/health` می‌ماند، یک سفارش واقعی ثبت می‌کند و تضمین می‌کند
+به وضعیت `reserved` می‌رسد. ایمیجی که ساخته می‌شود ولی سرویس نمی‌دهد، build
+موفق حساب نمی‌شود.
 
 ---
 
-## Layout
+## ساختار
 
 ```
 order-events/
 ├── orderflow/
-│   ├── events.py      # envelope, versioning, serialisation
-│   ├── store.py       # orders, outbox, claims, dead letters (SQLite)
-│   ├── broker.py      # Broker protocol: memory | flaky | redis
+│   ├── events.py      # پاکت، نسخه‌بندی، سریالایز
+│   ├── store.py       # سفارش‌ها، outbox، claimها، dead letterها (SQLite)
+│   ├── broker.py       # پروتکل Broker: memory | flaky | redis
 │   ├── relay.py       # outbox → broker
-│   ├── worker.py      # idempotency, retry ladder, dead-lettering
-│   ├── handlers.py    # business logic
+│   ├── worker.py      # ایدمپوتنسی، نردبان تلاش مجدد، dead-lettering
+│   ├── handlers.py    # منطق کسب‌وکار
 │   └── api.py         # FastAPI
 ├── tests/test_orderflow.py
 ├── .github/workflows/ci.yml
@@ -209,6 +213,6 @@ order-events/
 └── demo.py
 ```
 
-## License
+## مجوز
 
 MIT
